@@ -367,6 +367,7 @@ impl TranscriptionManager {
                     let params = WhisperInferenceParams {
                         language: whisper_language,
                         translate: settings.translate_to_english,
+                        suppress_non_speech_tokens: settings.suppress_non_speech_tokens,
                         ..Default::default()
                     };
 

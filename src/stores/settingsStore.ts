@@ -103,6 +103,8 @@ const settingUpdaters: {
     commands.updateRecordingRetentionPeriod(value as string),
   translate_to_english: (value) =>
     commands.changeTranslateToEnglishSetting(value as boolean),
+  suppress_non_speech_tokens: (value) =>
+    commands.changeSuppressNonSpeechTokensSetting(value as boolean),
   selected_language: (value) =>
     commands.changeSelectedLanguageSetting(value as string),
   overlay_position: (value) =>
