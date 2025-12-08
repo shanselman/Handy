@@ -287,6 +287,8 @@ pub struct AppSettings {
     pub mute_while_recording: bool,
     #[serde(default)]
     pub append_trailing_space: bool,
+    #[serde(default = "default_suppress_non_speech_tokens")]
+    pub suppress_non_speech_tokens: bool,
 }
 
 fn default_model() -> String {
@@ -417,6 +419,10 @@ fn default_post_process_prompts() -> Vec<LLMPrompt> {
     }]
 }
 
+fn default_suppress_non_speech_tokens() -> bool {
+    true
+}
+
 pub const SETTINGS_STORE_PATH: &str = "settings_store.json";
 
 pub fn get_default_settings() -> AppSettings {
@@ -486,6 +492,7 @@ pub fn get_default_settings() -> AppSettings {
         post_process_selected_prompt_id: None,
         mute_while_recording: false,
         append_trailing_space: false,
+        suppress_non_speech_tokens: default_suppress_non_speech_tokens(),
     }
 }
 
