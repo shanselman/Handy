@@ -14,9 +14,10 @@ export const SuppressNonSpeechTokens: React.FC<SuppressNonSpeechTokensProps> = R
     const suppressNonSpeechTokens = getSetting("suppress_non_speech_tokens") ?? true;
 
     const description = 
-      "When enabled (default), filters out non-speech tokens like [BLANK_AUDIO] and silence markers. " +
-      "Disable this if you want to say punctuation literally (e.g., saying 'comma' will transcribe as 'comma' " +
-      "instead of inserting a comma symbol).";
+      "Controls whether Whisper suppresses non-speech tokens and audio markers during transcription. " +
+      "When enabled (default), filters out tokens like [BLANK_AUDIO] and silence markers for cleaner output. " +
+      "Note: Whisper's automatic punctuation is part of the model and cannot be fully disabled. " +
+      "Disabling this may help with literal transcription of punctuation words, but results may vary.";
 
     return (
       <ToggleSwitch
