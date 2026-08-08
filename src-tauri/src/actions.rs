@@ -47,6 +47,34 @@ impl Drop for FinishGuard {
     }
 }
 
+struct ScreenAnnotationGuard {
+    app: AppHandle,
+    active: bool,
+}
+
+impl ScreenAnnotationGuard {
+    fn new(app: AppHandle, active: bool) -> Self {
+        Self { app, active }
+    }
+
+    fn take_image(&mut self) -> Option<Vec<u8>> {
+        if !self.active {
+            return None;
+        }
+        let image = crate::screen_annotation::take_annotated_image(&self.app);
+        self.active = false;
+        image
+    }
+}
+
+impl Drop for ScreenAnnotationGuard {
+    fn drop(&mut self) {
+        if self.active {
+            crate::screen_annotation::cancel(&self.app);
+        }
+    }
+}
+
 // Shortcut Action Trait
 pub trait ShortcutAction: Send + Sync {
     fn start(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str);
@@ -56,6 +84,7 @@ pub trait ShortcutAction: Send + Sync {
 // Transcribe Action
 struct TranscribeAction {
     post_process: bool,
+    annotate_screen: bool,
 }
 
 /// Field name for structured output JSON schema
@@ -518,14 +547,17 @@ impl ShortcutAction for TranscribeAction {
         }
         let plan_elapsed = plan_started.elapsed();
 
-        // Sizing the overlay follows the same advertised capability. A model that
-        // doesn't stream (or whose capability is not known yet) gets the compact
-        // pill instead of an oversized transparent live window.
+        // The dedicated annotation action owns the recording surface on Windows.
+        // Ordinary transcription keeps the configured recording overlay.
         let overlay_started = Instant::now();
-        match settings.overlay_style {
-            OverlayStyle::Live if model_supports_streaming => utils::show_streaming_overlay(app),
-            OverlayStyle::Live | OverlayStyle::Minimal => show_recording_overlay(app),
-            OverlayStyle::None => {} // show_overlay_state no-ops on None anyway
+        if !self.annotate_screen || !crate::screen_annotation::enabled() {
+            match settings.overlay_style {
+                OverlayStyle::Live if model_supports_streaming => {
+                    utils::show_streaming_overlay(app)
+                }
+                OverlayStyle::Live | OverlayStyle::Minimal => show_recording_overlay(app),
+                OverlayStyle::None => {} // show_overlay_state no-ops on None anyway
+            }
         }
         // Everything above runs before capture can begin, so each span here is
         // added keypress->capture latency.
@@ -597,12 +629,19 @@ impl ShortcutAction for TranscribeAction {
         }
 
         if recording_error.is_none() {
+            if self.annotate_screen
+                && crate::screen_annotation::enabled()
+                && !crate::screen_annotation::begin(app, &binding_id)
+            {
+                show_recording_overlay(app);
+            }
             // Dynamically register the cancel shortcut in a separate task to avoid deadlock
             shortcut::register_cancel_shortcut(app);
         } else {
             // Starting failed (for example due to blocked microphone permissions).
             // Revert UI state so we don't stay stuck in the recording overlay.
             tm.cancel_stream();
+            crate::screen_annotation::cancel(app);
             utils::hide_recording_overlay(app);
             change_tray_icon(app, TrayIconState::Idle);
             if let Some(err) = recording_error {
@@ -637,6 +676,9 @@ impl ShortcutAction for TranscribeAction {
 
         // Unregister the cancel shortcut when transcription stops
         shortcut::unregister_cancel_shortcut(app);
+        if self.annotate_screen {
+            crate::screen_annotation::finish(app);
+        }
 
         let stop_time = Instant::now();
         debug!("TranscribeAction::stop called for binding: {}", binding_id);
@@ -669,10 +711,12 @@ impl ShortcutAction for TranscribeAction {
 
         let binding_id = binding_id.to_string(); // Clone binding_id for the async task
         let post_process = self.post_process;
+        let annotate_screen = self.annotate_screen;
         let cancel_generation = rm.cancel_generation();
 
         tauri::async_runtime::spawn(async move {
             let _guard = FinishGuard(ah.clone());
+            let mut annotation_guard = ScreenAnnotationGuard::new(ah.clone(), annotate_screen);
             debug!(
                 "Starting async transcription task for binding: {}",
                 binding_id
@@ -806,7 +850,10 @@ impl ShortcutAction for TranscribeAction {
                                 }
                             }
 
-                            if processed.final_text.is_empty() {
+                            // Finalization may wait briefly for the webview to encode
+                            // its canvas. Keep that wait off the main/UI thread.
+                            let annotated_image = annotation_guard.take_image();
+                            if processed.final_text.is_empty() && annotated_image.is_none() {
                                 utils::hide_recording_overlay(&ah);
                                 change_tray_icon(&ah, TrayIconState::Idle);
                             } else {
@@ -822,7 +869,11 @@ impl ShortcutAction for TranscribeAction {
                                         return;
                                     }
 
-                                    match utils::paste(final_text, ah_clone.clone()) {
+                                    match utils::paste(
+                                        final_text,
+                                        ah_clone.clone(),
+                                        annotated_image,
+                                    ) {
                                         Ok(()) => debug!(
                                             "Text pasted successfully in {:?}",
                                             paste_time.elapsed()
@@ -932,11 +983,22 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
         "transcribe".to_string(),
         Arc::new(TranscribeAction {
             post_process: false,
+            annotate_screen: false,
         }) as Arc<dyn ShortcutAction>,
     );
     map.insert(
         "transcribe_with_post_process".to_string(),
-        Arc::new(TranscribeAction { post_process: true }) as Arc<dyn ShortcutAction>,
+        Arc::new(TranscribeAction {
+            post_process: true,
+            annotate_screen: false,
+        }) as Arc<dyn ShortcutAction>,
+    );
+    map.insert(
+        "transcribe_with_annotation".to_string(),
+        Arc::new(TranscribeAction {
+            post_process: false,
+            annotate_screen: true,
+        }) as Arc<dyn ShortcutAction>,
     );
     map.insert(
         "cancel".to_string(),

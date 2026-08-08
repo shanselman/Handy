@@ -822,6 +822,48 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
 
 pub const SETTINGS_STORE_PATH: &str = "settings_store.json";
 
+#[cfg(target_os = "windows")]
+fn canonical_binding(binding: &str) -> String {
+    let mut parts = binding
+        .split('+')
+        .map(|part| match part.trim().to_ascii_lowercase().as_str() {
+            "control" => "ctrl".to_string(),
+            "option" => "alt".to_string(),
+            "command" | "cmd" | "super" | "win" | "windows" => "meta".to_string(),
+            part => part.to_string(),
+        })
+        .collect::<Vec<_>>();
+    parts.sort_by_key(|part| match part.as_str() {
+        "ctrl" => (0, part.clone()),
+        "alt" => (1, part.clone()),
+        "shift" => (2, part.clone()),
+        "meta" => (3, part.clone()),
+        _ => (4, part.clone()),
+    });
+    parts.join("+")
+}
+
+#[cfg(target_os = "windows")]
+fn available_annotation_binding(
+    bindings: &HashMap<String, ShortcutBinding>,
+) -> Option<&'static str> {
+    const CANDIDATES: [&str; 6] = [
+        "ctrl+alt+space",
+        "ctrl+alt+shift+space",
+        "ctrl+alt+h",
+        "ctrl+alt+shift+h",
+        "ctrl+alt+a",
+        "ctrl+alt+shift+a",
+    ];
+
+    CANDIDATES.into_iter().find(|candidate| {
+        let candidate = canonical_binding(candidate);
+        !bindings
+            .values()
+            .any(|binding| canonical_binding(&binding.current_binding) == candidate)
+    })
+}
+
 pub fn get_default_settings() -> AppSettings {
     #[cfg(target_os = "windows")]
     let default_shortcut = "ctrl+space";
@@ -861,6 +903,17 @@ pub fn get_default_settings() -> AppSettings {
                 .to_string(),
             default_binding: default_post_process_shortcut.to_string(),
             current_binding: default_post_process_shortcut.to_string(),
+        },
+    );
+    #[cfg(target_os = "windows")]
+    bindings.insert(
+        "transcribe_with_annotation".to_string(),
+        ShortcutBinding {
+            id: "transcribe_with_annotation".to_string(),
+            name: "Transcribe + Annotate".to_string(),
+            description: "Captures the active screen so you can draw while dictating.".to_string(),
+            default_binding: "ctrl+alt+space".to_string(),
+            current_binding: "ctrl+alt+space".to_string(),
         },
     );
     bindings.insert(
@@ -998,12 +1051,24 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
         }
 
         // Merge in any bindings added since this store was written.
-        for (key, value) in get_default_settings().bindings {
-            if let std::collections::hash_map::Entry::Vacant(entry) = settings.bindings.entry(key) {
-                debug!("Adding missing binding: {}", entry.key());
-                entry.insert(value);
-                updated = true;
+        for (key, mut value) in get_default_settings().bindings {
+            if settings.bindings.contains_key(&key) {
+                continue;
             }
+
+            #[cfg(target_os = "windows")]
+            if key == "transcribe_with_annotation" {
+                let Some(binding) = available_annotation_binding(&settings.bindings) else {
+                    warn!("No conflict-free default is available for the annotation shortcut");
+                    continue;
+                };
+                value.default_binding = binding.to_string();
+                value.current_binding = binding.to_string();
+            }
+
+            debug!("Adding missing binding: {}", key);
+            settings.bindings.insert(key, value);
+            updated = true;
         }
 
         if updated {
@@ -1177,6 +1242,35 @@ mod tests {
 
     fn default_settings_json() -> serde_json::Value {
         serde_json::to_value(get_default_settings()).unwrap()
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_defaults_include_annotation_shortcut() {
+        let settings = get_default_settings();
+        let binding = &settings.bindings["transcribe_with_annotation"];
+        assert_eq!(binding.current_binding, "ctrl+alt+space");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn annotation_shortcut_avoids_existing_binding() {
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "custom".to_string(),
+            ShortcutBinding {
+                id: "custom".to_string(),
+                name: "Custom".to_string(),
+                description: String::new(),
+                default_binding: "ctrl+alt+space".to_string(),
+                current_binding: "alt+ctrl+space".to_string(),
+            },
+        );
+
+        assert_eq!(
+            available_annotation_binding(&bindings),
+            Some("ctrl+alt+shift+space")
+        );
     }
 
     /// Every field must survive a partial store: a missing key must never fail

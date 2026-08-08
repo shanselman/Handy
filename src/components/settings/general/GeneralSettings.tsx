@@ -17,11 +17,19 @@ export const GeneralSettings: React.FC = () => {
   const { t } = useTranslation();
   const { audioFeedbackEnabled, getSetting } = useSettings();
   const pushToTalk = getSetting("push_to_talk");
-  const isLinux = type() === "linux";
+  const osType = type();
+  const isLinux = osType === "linux";
+  const isWindows = osType === "windows";
   return (
     <div className="max-w-3xl w-full mx-auto space-y-6">
       <SettingsGroup title={t("settings.general.title")}>
         <ShortcutInput shortcutId="transcribe" grouped={true} />
+        {isWindows && (
+          <ShortcutInput
+            shortcutId="transcribe_with_annotation"
+            grouped={true}
+          />
+        )}
         <PushToTalk descriptionMode="tooltip" grouped={true} />
         {/* Cancel shortcut is hidden with push-to-talk (release key cancels) and on Linux (dynamic shortcut instability) */}
         {!isLinux && !pushToTalk && (

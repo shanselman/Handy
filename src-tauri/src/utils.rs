@@ -87,6 +87,7 @@ pub fn cancel_current_operation(app: &AppHandle) {
     // Abandon any live streaming transcription
     let tm = app.state::<Arc<TranscriptionManager>>();
     tm.cancel_stream();
+    crate::screen_annotation::cancel(app);
 
     // Update tray icon and hide overlay
     change_tray_icon(app, crate::tray::TrayIconState::Idle);

@@ -76,7 +76,10 @@ pub struct TranscriptionCoordinator {
 }
 
 pub fn is_transcribe_binding(id: &str) -> bool {
-    id == "transcribe" || id == "transcribe_with_post_process"
+    matches!(
+        id,
+        "transcribe" | "transcribe_with_post_process" | "transcribe_with_annotation"
+    )
 }
 
 impl TranscriptionCoordinator {
@@ -337,6 +340,11 @@ mod tests {
             ),
             PttAction::Passthrough
         );
+    }
+
+    #[test]
+    fn annotation_binding_uses_transcription_coordinator() {
+        assert!(is_transcribe_binding("transcribe_with_annotation"));
     }
 
     #[test]

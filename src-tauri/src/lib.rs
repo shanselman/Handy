@@ -16,6 +16,7 @@ mod memory;
 mod overlay;
 mod paste_tx;
 pub mod portable;
+mod screen_annotation;
 mod secure_input;
 mod settings;
 mod shortcut;
@@ -180,6 +181,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(model_manager.clone());
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
+    screen_annotation::initialize(app_handle);
     app_handle.manage(tray::CurrentTrayIconState::new());
 
     // Note: Shortcuts are NOT initialized here.
@@ -335,6 +337,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
 
     // Create the recording overlay window (hidden by default)
     utils::create_recording_overlay(app_handle);
+    screen_annotation::create_window(app_handle);
 }
 
 #[tauri::command]
@@ -690,6 +693,10 @@ pub fn run(cli_args: CliArgs) {
             commands::check_apple_intelligence_available,
             commands::initialize_enigo,
             commands::initialize_shortcuts,
+            screen_annotation::complete_screen_annotation,
+            screen_annotation::get_screen_annotation_snapshot,
+            screen_annotation::show_screen_annotation,
+            screen_annotation::submit_screen_annotation,
             commands::models::get_available_models,
             commands::models::get_model_info,
             commands::models::download_model,
