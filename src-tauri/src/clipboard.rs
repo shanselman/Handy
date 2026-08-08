@@ -100,6 +100,97 @@ fn paste_via_clipboard(
     Ok(())
 }
 
+fn paste_text_and_image_via_clipboard(
+    enigo: &mut Enigo,
+    text: &str,
+    image: &tauri::image::Image<'_>,
+    app_handle: &AppHandle,
+    paste_method: &PasteMethod,
+    paste_delay_ms: u64,
+    paste_delay_after_ms: u64,
+) -> Result<(), String> {
+    let clipboard = app_handle.clipboard();
+    let saved_text = clipboard.read_text().ok().filter(|value| !value.is_empty());
+    let saved_image = if saved_text.is_none() {
+        clipboard.read_image().ok().map(|image| image.to_owned())
+    } else {
+        None
+    };
+
+    let paste_result = (|| {
+        if !text.trim().is_empty() {
+            clipboard
+                .write_text(text)
+                .map_err(|error| format!("Failed to write transcript to clipboard: {error}"))?;
+            std::thread::sleep(Duration::from_millis(paste_delay_ms));
+            send_clipboard_chord(enigo, paste_method)?;
+            std::thread::sleep(Duration::from_millis(paste_delay_after_ms));
+        }
+
+        clipboard
+            .write_image(image)
+            .map_err(|error| format!("Failed to write annotated screenshot: {error}"))?;
+        std::thread::sleep(Duration::from_millis(paste_delay_ms));
+        input::send_paste_ctrl_v(enigo, 100)?;
+        std::thread::sleep(Duration::from_millis(paste_delay_after_ms));
+        Ok(())
+    })();
+
+    if let Some(saved_text) = saved_text {
+        let _ = clipboard.write_text(saved_text);
+    } else if let Some(saved_image) = saved_image {
+        let _ = clipboard.write_image(&saved_image);
+    } else {
+        let _ = clipboard.clear();
+    }
+
+    paste_result
+}
+
+fn send_clipboard_chord(enigo: &mut Enigo, paste_method: &PasteMethod) -> Result<(), String> {
+    match paste_method {
+        PasteMethod::CtrlV => input::send_paste_ctrl_v(enigo, 100),
+        PasteMethod::CtrlShiftV => input::send_paste_ctrl_shift_v(enigo, 100),
+        PasteMethod::ShiftInsert => input::send_paste_shift_insert(enigo, 100),
+        _ => Err("Invalid paste method for clipboard paste".to_string()),
+    }
+}
+
+fn paste_image_via_clipboard(
+    enigo: &mut Enigo,
+    image: &tauri::image::Image<'_>,
+    app_handle: &AppHandle,
+    paste_delay_ms: u64,
+    paste_delay_after_ms: u64,
+) -> Result<(), String> {
+    let clipboard = app_handle.clipboard();
+    let saved_text = clipboard.read_text().ok().filter(|value| !value.is_empty());
+    let saved_image = if saved_text.is_none() {
+        clipboard.read_image().ok().map(|image| image.to_owned())
+    } else {
+        None
+    };
+
+    let paste_result = (|| {
+        clipboard
+            .write_image(image)
+            .map_err(|error| format!("Failed to write annotated screenshot: {error}"))?;
+        std::thread::sleep(Duration::from_millis(paste_delay_ms));
+        input::send_paste_ctrl_v(enigo, 100)?;
+        std::thread::sleep(Duration::from_millis(paste_delay_after_ms));
+        Ok(())
+    })();
+
+    if let Some(saved_text) = saved_text {
+        let _ = clipboard.write_text(saved_text);
+    } else if let Some(saved_image) = saved_image {
+        let _ = clipboard.write_image(&saved_image);
+    } else {
+        let _ = clipboard.clear();
+    }
+    paste_result
+}
+
 /// Attempts to send a key combination using Linux-native tools.
 /// Returns `Ok(true)` if a native tool handled it, `Ok(false)` to fall back to enigo.
 #[cfg(target_os = "linux")]
@@ -612,7 +703,11 @@ fn should_send_auto_submit(auto_submit: bool, paste_method: PasteMethod) -> bool
     auto_submit && paste_method != PasteMethod::None
 }
 
-pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
+pub fn paste(
+    text: String,
+    app_handle: AppHandle,
+    annotated_image_bytes: Option<Vec<u8>>,
+) -> Result<(), String> {
     let settings = get_settings(&app_handle);
     let paste_method = settings.paste_method;
     let paste_delay_ms = settings.paste_delay_ms;
@@ -624,6 +719,12 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     } else {
         text
     };
+    let annotated_image = annotated_image_bytes
+        .map(|bytes| {
+            tauri::image::Image::from_bytes(&bytes)
+                .map_err(|error| format!("Failed to decode annotated screenshot: {error}"))
+        })
+        .transpose()?;
 
     info!(
         "Using paste method: {:?}, delay before: {}ms, delay after: {}ms",
@@ -651,38 +752,61 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
                 #[cfg(target_os = "linux")]
                 settings.typing_tool,
             )?;
+            if let Some(image) = annotated_image.as_ref() {
+                paste_image_via_clipboard(
+                    &mut enigo,
+                    image,
+                    &app_handle,
+                    paste_delay_ms,
+                    paste_delay_after_ms,
+                )?;
+            }
         }
         PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
-            // Debug-gated receipt-sequenced paste (#502): restore the clipboard
-            // after the target actually reads the transcript, not on a timer.
-            // On success it fully handles the paste (including auto-submit and
-            // clipboard handling) asynchronously; on failure fall through to
-            // the legacy path untouched.
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            if settings.reliable_paste {
-                match crate::paste_tx::try_reliable_paste(
+            if let Some(image) = annotated_image.as_ref() {
+                paste_text_and_image_via_clipboard(
+                    &mut enigo,
+                    &text,
+                    image,
+                    &app_handle,
+                    &paste_method,
+                    paste_delay_ms,
+                    paste_delay_after_ms,
+                )?;
+            } else {
+                // Debug-gated receipt-sequenced paste (#502): restore the clipboard
+                // after the target actually reads the transcript, not on a timer.
+                // On success it fully handles the paste (including auto-submit and
+                // clipboard handling) asynchronously; on failure fall through to
+                // the legacy path untouched.
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                if settings.reliable_paste {
+                    match crate::paste_tx::try_reliable_paste(
+                        &text,
+                        &app_handle,
+                        &paste_method,
+                        &mut enigo,
+                        settings.auto_submit,
+                        settings.auto_submit_key,
+                        settings.clipboard_handling,
+                    ) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => {
+                            log::warn!(
+                                "Reliable paste unavailable ({e}); falling back to legacy paste"
+                            )
+                        }
+                    }
+                }
+                paste_via_clipboard(
+                    &mut enigo,
                     &text,
                     &app_handle,
                     &paste_method,
-                    &mut enigo,
-                    settings.auto_submit,
-                    settings.auto_submit_key,
-                    settings.clipboard_handling,
-                ) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => {
-                        log::warn!("Reliable paste unavailable ({e}); falling back to legacy paste")
-                    }
-                }
+                    paste_delay_ms,
+                    paste_delay_after_ms,
+                )?
             }
-            paste_via_clipboard(
-                &mut enigo,
-                &text,
-                &app_handle,
-                &paste_method,
-                paste_delay_ms,
-                paste_delay_after_ms,
-            )?
         }
         PasteMethod::ExternalScript => {
             let script_path = settings
@@ -691,6 +815,15 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
                 .filter(|p| !p.is_empty())
                 .ok_or("External script path is not configured")?;
             paste_via_external_script(&text, script_path)?;
+            if let Some(image) = annotated_image.as_ref() {
+                paste_image_via_clipboard(
+                    &mut enigo,
+                    image,
+                    &app_handle,
+                    paste_delay_ms,
+                    paste_delay_after_ms,
+                )?;
+            }
         }
     }
 
