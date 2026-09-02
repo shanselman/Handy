@@ -12,7 +12,7 @@ concurrency:
 jobs:
   windows-x64:
     permissions:
-      contents: read
+      contents: write
     uses: ./.github/workflows/build.yml
     with:
       platform: windows-latest
