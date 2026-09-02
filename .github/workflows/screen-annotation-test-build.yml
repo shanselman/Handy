@@ -1,0 +1,25 @@
+name: "Screen Annotation Test Build"
+
+on:
+  push:
+    branches: [private/screen-annotation]
+  workflow_dispatch:
+
+concurrency:
+  group: screen-annotation-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      platform: windows-latest
+      target: x86_64-pc-windows-msvc
+      build-args: >-
+        --config '{"bundle":{"createUpdaterArtifacts":false,"windows":{"signCommand":null}}}'
+      sign-binaries: false
+      asset-prefix: handy-screen-annotation-test
+      upload-artifacts: true
+    secrets: inherit

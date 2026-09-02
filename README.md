@@ -19,7 +19,7 @@ Handy isn't trying to be the best speech-to-text app—it's trying to be the mos
 
 ## How It Works
 
-1. **Press** a configurable keyboard shortcut to start/stop recording (or use push-to-talk mode)
+1. **Press** a configurable keyboard shortcut: hold it to record and release to stop, or tap it to toggle recording on and off (Hold-only and Toggle-only modes are also available)
 2. **Speak** your words while the shortcut is active
 3. **Release** and Handy processes your speech using Whisper
 4. **Get** your transcribed text pasted directly into whatever app you're using
@@ -48,6 +48,9 @@ The process is entirely local:
 ### Development Setup
 
 For detailed build instructions including platform-specific requirements, see [BUILD.md](BUILD.md).
+
+The Windows screen-annotation prototype is documented in
+[SCREEN_ANNOTATION_SPIKE.md](SCREEN_ANNOTATION_SPIKE.md).
 
 ## Integrations
 
@@ -115,6 +118,18 @@ handy --start-hidden --no-tray
 
 This project is actively being developed and has some [known issues](https://github.com/cjpais/Handy/issues). We believe in transparency about the current state:
 
+### Bluetooth Headset Microphones (macOS)
+
+Using a Bluetooth headset microphone on macOS may temporarily reduce playback quality or volume while recording because Bluetooth switches to bidirectional audio. Keep your headphones as the output device and select your Mac's built-in or an external microphone in Handy to avoid this.
+
+### fn and Globe Key Shortcuts (macOS)
+
+Shortcuts that include the `fn` (Globe) key **only work on Apple keyboards** — your Mac's built-in keyboard or an Apple external keyboard. They will never trigger on a third-party keyboard, even while it is connected to the same Mac.
+
+This is a hardware limitation rather than a Handy bug. `fn` is not part of the standard USB HID keyboard specification: Apple reports it through a vendor-specific usage that macOS honors only from Apple devices, while third-party keyboards handle their `Fn` key entirely in firmware and send nothing to the computer. There is no event for Handy to listen for.
+
+If you switch between a MacBook keyboard and an external one, pick a shortcut built from standard modifiers (`ctrl`, `option`, `shift`, `command`) or a regular key instead.
+
 ### Major Issues (Help Wanted)
 
 **Whisper Model Crashes:**
@@ -141,6 +156,7 @@ For reliable text input on Linux, install the appropriate tool for your display 
 | Both           | `dotool`         | `sudo apt install dotool` (requires `input` group) |
 
 - **X11**: Install `xdotool` for both direct typing and clipboard paste shortcuts
+- **Ubuntu 26.04**: Has Wayland display server by default. `wtype` does not work, you need to install `ydotool` and configure systemd as described [here](https://github.com/cjpais/Handy/pull/557#issuecomment-3781249267).
 - **Wayland**: Install `wtype` (preferred) or `dotool` for text input to work correctly
 - **dotool setup**: Requires adding your user to the `input` group: `sudo usermod -aG input $USER` (then log out and back in)
 
