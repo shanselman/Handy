@@ -246,7 +246,7 @@ pub fn complete_screen_annotation(app: AppHandle) -> Result<(), String> {
     let coordinator = app
         .try_state::<crate::TranscriptionCoordinator>()
         .ok_or_else(|| "Transcription coordinator is unavailable".to_string())?;
-    coordinator.send_input(&binding_id, "screen annotation done", true, false);
+    coordinator.send_external_input(&binding_id, "screen annotation done");
     Ok(())
 }
 
