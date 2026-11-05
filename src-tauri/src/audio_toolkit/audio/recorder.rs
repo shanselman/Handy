@@ -24,6 +24,7 @@ enum Cmd {
     /// long the command sat in the channel, plus a one-shot acknowledgement
     /// sent only after the first microphone sample chunk is processed.
     Start(VadPolicy, Instant, mpsc::Sender<()>),
+    Position(mpsc::Sender<Result<usize, String>>),
     Stop(mpsc::Sender<Vec<f32>>),
     Shutdown,
 }
@@ -42,6 +43,8 @@ pub enum VadPolicy {
     Offline,
     /// VAD profile with a longer post-speech tail for streaming-capable models.
     Streaming,
+    /// Preserve sample positions for annotations, replacing noise with silence.
+    Annotation,
 }
 
 /// A single VAD engine plus the two hangover-tail lengths its smoothing wrapper
@@ -62,7 +65,9 @@ impl VadConfig {
     fn hangover_for(&self, policy: VadPolicy) -> usize {
         match policy {
             VadPolicy::Streaming => self.streaming_hangover_frames,
-            VadPolicy::Offline | VadPolicy::Disabled => self.offline_hangover_frames,
+            VadPolicy::Offline | VadPolicy::Disabled | VadPolicy::Annotation => {
+                self.offline_hangover_frames
+            }
         }
     }
 }
@@ -392,6 +397,17 @@ impl AudioRecorder {
         Ok(resp_rx.recv()?) // wait for the samples
     }
 
+    /// Read the captured sample position without stopping the microphone.
+    pub fn sample_position(&self) -> Result<usize, String> {
+        let tx = self.cmd_tx.as_ref().ok_or("Recorder is not open")?;
+        let (reply_tx, reply_rx) = mpsc::channel();
+        tx.send(Cmd::Position(reply_tx))
+            .map_err(|error| error.to_string())?;
+        reply_rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| format!("Failed to read recording position: {error}"))?
+    }
+
     /// True when the active capture stream must be rebuilt.
     ///
     /// cpal may report a device disconnect asynchronously without closing its
@@ -629,6 +645,68 @@ mod tests {
     }
 
     #[test]
+    fn annotation_vad_preroll_keeps_original_sample_positions() {
+        let mut timeline = vec![0.0; 6];
+        let boundary = timeline.len();
+        timeline.resize(8, 0.0);
+        super::fill_timeline_speech(&mut timeline, &[0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(&timeline[..boundary], &[0.0, 0.0, 0.0, 0.0, 0.1, 0.2]);
+        assert_eq!(&timeline[boundary..], &[0.3, 0.4]);
+        assert_eq!(timeline.len(), 8);
+    }
+
+    #[test]
+    fn annotation_position_does_not_stop_capture() {
+        let (sample_tx, sample_rx) = mpsc::channel();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_consumer(
+                16_000,
+                None,
+                sample_rx,
+                cmd_rx,
+                None,
+                None,
+                Arc::new(AtomicBool::new(false)),
+                Instant::now(),
+            );
+        });
+        cmd_tx
+            .send(Cmd::Start(
+                super::VadPolicy::Annotation,
+                Instant::now(),
+                ready_tx,
+            ))
+            .expect("start");
+        sample_tx
+            .send(AudioChunk::Samples(vec![0.2; 1600]))
+            .expect("audio");
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ready");
+        let (position_tx, position_rx) = mpsc::channel();
+        cmd_tx.send(Cmd::Position(position_tx)).expect("position");
+        let position = position_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("reply")
+            .expect("active");
+        let (next_tx, next_rx) = mpsc::channel();
+        cmd_tx.send(Cmd::Position(next_tx)).expect("next position");
+        assert_eq!(
+            next_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reply")
+                .expect("still active"),
+            position
+        );
+        assert!(position > 0);
+        cmd_tx.send(Cmd::Shutdown).expect("shutdown");
+        drop(sample_tx);
+        worker.join().expect("consumer");
+    }
+
+    #[test]
     fn stream_error_requires_reopen() {
         let recorder = AudioRecorder::new().expect("recorder");
         recorder.stream_error.store(true, Ordering::Relaxed);
@@ -735,6 +813,14 @@ mod tests {
     }
 }
 
+fn fill_timeline_speech(timeline: &mut [f32], speech: &[f32]) {
+    // Smoothed VAD may release pre-roll after a point boundary. Fill its original
+    // slots instead of shifting those samples into the next point.
+    let count = speech.len().min(timeline.len());
+    let start = timeline.len() - count;
+    timeline[start..].copy_from_slice(&speech[speech.len() - count..]);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_consumer(
     in_sample_rate: u32,
@@ -803,8 +889,16 @@ fn run_consumer(
             return;
         }
 
+        let preserve_timeline = vad_policy == VadPolicy::Annotation;
+        if preserve_timeline {
+            out_buf.resize(out_buf.len() + samples.len(), 0.0);
+        }
         let mut emit = |buf: &[f32]| {
-            out_buf.extend_from_slice(buf);
+            if preserve_timeline {
+                fill_timeline_speech(out_buf, buf);
+            } else {
+                out_buf.extend_from_slice(buf);
+            }
             if let Some(cb) = audio_cb {
                 cb(buf);
             }
@@ -869,6 +963,14 @@ fn run_consumer(
                             det.reset();
                         }
                     }
+                }
+                Cmd::Position(reply_tx) => {
+                    let position = if recording {
+                        Ok(processed_samples.len())
+                    } else {
+                        Err("No recording is active".to_string())
+                    };
+                    let _ = reply_tx.send(position);
                 }
                 Cmd::Stop(reply_tx) => {
                     recording = false;

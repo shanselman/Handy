@@ -729,6 +729,7 @@ pub fn run(cli_args: CliArgs) {
             commands::initialize_enigo,
             commands::initialize_shortcuts,
             screen_annotation::complete_screen_annotation,
+            screen_annotation::advance_screen_annotation,
             screen_annotation::get_screen_annotation_snapshot,
             screen_annotation::show_screen_annotation,
             screen_annotation::submit_screen_annotation,

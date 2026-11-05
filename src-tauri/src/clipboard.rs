@@ -117,7 +117,7 @@ fn paste_via_clipboard(
     })
 }
 
-fn paste_text_and_image_via_clipboard(
+fn paste_image_and_text_via_clipboard(
     text: &str,
     image: &tauri::image::Image<'_>,
     app_handle: &AppHandle,
@@ -134,6 +134,13 @@ fn paste_text_and_image_via_clipboard(
     };
 
     let paste_result = (|| {
+        clipboard
+            .write_image(image)
+            .map_err(|error| format!("Failed to write annotated screenshot: {error}"))?;
+        std::thread::sleep(Duration::from_millis(paste_delay_ms));
+        with_enigo(app_handle, |enigo| input::send_paste_ctrl_v(enigo, 100))?;
+        std::thread::sleep(Duration::from_millis(paste_delay_after_ms));
+
         if !text.trim().is_empty() {
             clipboard
                 .write_text(text)
@@ -145,12 +152,6 @@ fn paste_text_and_image_via_clipboard(
             std::thread::sleep(Duration::from_millis(paste_delay_after_ms));
         }
 
-        clipboard
-            .write_image(image)
-            .map_err(|error| format!("Failed to write annotated screenshot: {error}"))?;
-        std::thread::sleep(Duration::from_millis(paste_delay_ms));
-        with_enigo(app_handle, |enigo| input::send_paste_ctrl_v(enigo, 100))?;
-        std::thread::sleep(Duration::from_millis(paste_delay_after_ms));
         Ok(())
     })();
 
@@ -896,12 +897,6 @@ pub fn paste(
             info!("PasteMethod::None selected - skipping paste action");
         }
         PasteMethod::Direct => {
-            paste_direct(
-                &text,
-                &app_handle,
-                #[cfg(target_os = "linux")]
-                settings.typing_tool,
-            )?;
             if let Some(image) = annotated_image.as_ref() {
                 paste_image_via_clipboard(
                     image,
@@ -910,10 +905,16 @@ pub fn paste(
                     paste_delay_after_ms,
                 )?;
             }
+            paste_direct(
+                &text,
+                &app_handle,
+                #[cfg(target_os = "linux")]
+                settings.typing_tool,
+            )?;
         }
         PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
             if let Some(image) = annotated_image.as_ref() {
-                paste_text_and_image_via_clipboard(
+                paste_image_and_text_via_clipboard(
                     &text,
                     image,
                     &app_handle,
@@ -964,7 +965,6 @@ pub fn paste(
                 .as_ref()
                 .filter(|p| !p.is_empty())
                 .ok_or("External script path is not configured")?;
-            paste_via_external_script(&text, script_path)?;
             if let Some(image) = annotated_image.as_ref() {
                 paste_image_via_clipboard(
                     image,
@@ -973,6 +973,7 @@ pub fn paste(
                     paste_delay_after_ms,
                 )?;
             }
+            paste_via_external_script(&text, script_path)?;
         }
     }
 

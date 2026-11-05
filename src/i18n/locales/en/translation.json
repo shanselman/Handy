@@ -648,6 +648,16 @@
   "whatsNew": {
     "title": "New in Handy v{{version}}"
   },
+  "screenAnnotation": {
+    "holdShortcut": "Hold Left Alt + Space to record and draw. Press Ctrl for the next point. Release Alt or Space to finish.",
+    "nextPointShortcut": "Next point (Ctrl)",
+    "nextPoint": "Next point",
+    "point": "Point {{number}}",
+    "clearInk": "Clear ink",
+    "inkColor": "Ink color",
+    "strokeWidth": "Stroke width",
+    "actionFailed": "Couldn't update the annotation."
+  },
   "common": {
     "loading": "Loading...",
     "delete": "Delete",

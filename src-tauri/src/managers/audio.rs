@@ -861,6 +861,23 @@ impl AudioRecordingManager {
         }
     }
 
+    /// Read a boundary in the same sample timeline returned by `stop_recording`.
+    pub fn recording_position(&self, binding_id: &str) -> Result<usize, String> {
+        let state = self.state.lock().map_err(|error| error.to_string())?;
+        if !matches!(
+            &*state,
+            RecordingState::Recording { binding_id: active } if active == binding_id
+        ) {
+            return Err("The annotation recording is no longer active".to_string());
+        }
+        self.recorder
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_ref()
+            .ok_or("Recorder is not available")?
+            .sample_position()
+    }
+
     /// Replace the VAD implementation while idle. If the microphone stream is
     /// currently warm (always-on or lazy-close mode), reopen it with the new
     /// detector before reporting success. A failed reopen restores the previous

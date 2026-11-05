@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -14,6 +14,15 @@ pub struct ScreenAnnotationSnapshot {
     path: String,
     width: u32,
     height: u32,
+    point_count: usize,
+}
+
+pub fn remove_audio_segments(wav_path: &Path) {
+    if let Err(error) = std::fs::remove_file(audio_segments_path(wav_path)) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            log::error!("Failed to remove annotation audio boundaries: {error}");
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -32,6 +41,7 @@ struct AnnotationSession {
     binding_id: String,
     target_window: isize,
     phase: AnnotationPhase,
+    point_starts: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +49,7 @@ enum AnnotationPhase {
     Recording,
     Finalizing,
     Finalized,
+    Failed,
 }
 
 impl AnnotationPhase {
@@ -159,13 +170,13 @@ pub fn finish(app: &AppHandle) {
     }
 
     let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
-        mark_finalized(&state);
+        mark_finalization_failed(&state);
         return;
     };
 
     if let Err(error) = window.emit("finish-screen-annotation", ()) {
         log::warn!("Failed to finalize screen annotation: {error}");
-        mark_finalized(&state);
+        mark_finalization_failed(&state);
         hide_and_restore(app);
     } else {
         // Dismiss immediately; PNG encoding and transcription can finish while
@@ -205,23 +216,35 @@ fn is_recording_session(app: &AppHandle, session_id: u64) -> bool {
         .unwrap_or(false)
 }
 
-pub fn take_annotated_image(app: &AppHandle) -> Option<Vec<u8>> {
-    let state = app.try_state::<ScreenAnnotationState>()?;
-    let mut guard = state.session.lock().ok()?;
+pub fn take_annotated_image(app: &AppHandle) -> Result<Option<Vec<u8>>, String> {
+    let state = app.state::<ScreenAnnotationState>();
+    let mut guard = state.session.lock().map_err(|error| error.to_string())?;
 
     if guard
         .as_ref()
         .is_some_and(|session| session.phase.should_wait())
     {
-        let (new_guard, wait_result) =
-            state.finalized.wait_timeout(guard, FINALIZE_TIMEOUT).ok()?;
+        let (new_guard, wait_result) = state
+            .finalized
+            .wait_timeout_while(guard, FINALIZE_TIMEOUT, |session| {
+                session
+                    .as_ref()
+                    .is_some_and(|session| session.phase.should_wait())
+            })
+            .map_err(|error| error.to_string())?;
         guard = new_guard;
         if wait_result.timed_out() {
-            log::warn!("Timed out waiting for annotated screenshot; using latest image");
+            return Err("Timed out waiting for the numbered screenshot".to_string());
         }
     }
 
-    let session = guard.take()?;
+    let Some(session) = guard.as_ref() else {
+        return Ok(None);
+    };
+    if session.phase != AnnotationPhase::Finalized {
+        return Err("The numbered screenshot is not ready".to_string());
+    }
+    let session = guard.take().ok_or("The annotation session ended")?;
     drop(guard);
 
     let _ = std::fs::remove_file(session.snapshot_path);
@@ -229,7 +252,125 @@ pub fn take_annotated_image(app: &AppHandle) -> Option<Vec<u8>> {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.hide();
     }
-    Some(session.png)
+    Ok(Some(session.png))
+}
+
+pub fn audio_segment_starts(app: &AppHandle) -> Result<Option<Vec<usize>>, String> {
+    let state = app.state::<ScreenAnnotationState>();
+    let session = state.session.lock().map_err(|error| error.to_string())?;
+    Ok(session.as_ref().map(|session| session.point_starts.clone()))
+}
+
+pub fn request_next_point(app: &AppHandle) {
+    let result = advance_point(app, None).and_then(|snapshot| {
+        app.get_webview_window(WINDOW_LABEL)
+            .ok_or_else(|| "The annotation window is unavailable".to_string())
+            .and_then(|window| {
+                window
+                    .emit("annotation-point-changed", snapshot)
+                    .map_err(|error| error.to_string())
+            })
+    });
+    if let Err(error) = result {
+        log::error!("Failed to advance the annotation point: {error}");
+        let _ = app.emit("transcription-error", error);
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn advance_screen_annotation(
+    app: AppHandle,
+    session_id: u64,
+    point_number: usize,
+) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        advance_point(&app, Some((session_id, point_number))).map(|snapshot| snapshot.point_count)
+    })
+    .await
+    .map_err(|error| format!("Failed to start the next annotation point: {error}"))?
+}
+
+fn advance_point(
+    app: &AppHandle,
+    expected: Option<(u64, usize)>,
+) -> Result<ScreenAnnotationSnapshot, String> {
+    let state = app.state::<ScreenAnnotationState>();
+    let mut session = state.session.lock().map_err(|error| error.to_string())?;
+    let session = session.as_mut().ok_or("No screen annotation is active")?;
+    let (session_id, point_number) =
+        expected.unwrap_or((session.snapshot.session_id, session.point_starts.len()));
+    validate_point_transition(session, session_id, point_number)?;
+    // Serialize the boundary with finish/cancel and other point requests.
+    let position = app
+        .state::<std::sync::Arc<crate::managers::audio::AudioRecordingManager>>()
+        .recording_position(&session.binding_id)?;
+    session.point_starts.push(position);
+    session.snapshot.point_count = session.point_starts.len();
+    Ok(session.snapshot.clone())
+}
+
+fn validate_point_transition(
+    session: &AnnotationSession,
+    session_id: u64,
+    point_number: usize,
+) -> Result<(), String> {
+    if session.snapshot.session_id != session_id
+        || session.phase != AnnotationPhase::Recording
+        || session.point_starts.len() != point_number
+    {
+        return Err("The annotation point is no longer current".to_string());
+    }
+    Ok(())
+}
+
+pub fn audio_segments_path(wav_path: &Path) -> PathBuf {
+    wav_path.with_extension("annotation.json")
+}
+
+pub fn save_audio_segments(wav_path: &Path, starts: &[usize]) -> anyhow::Result<()> {
+    std::fs::write(audio_segments_path(wav_path), serde_json::to_vec(starts)?)?;
+    Ok(())
+}
+
+pub fn read_audio_segments(wav_path: &Path) -> anyhow::Result<Option<Vec<usize>>> {
+    match std::fs::read(audio_segments_path(wav_path)) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn transcribe_numbered_segments(
+    samples: &[f32],
+    starts: &[usize],
+    mut transcribe: impl FnMut(Vec<f32>) -> anyhow::Result<String>,
+) -> anyhow::Result<String> {
+    use anyhow::{ensure, Context};
+
+    ensure!(
+        starts.first() == Some(&0)
+            && starts.windows(2).all(|pair| pair[0] <= pair[1])
+            && starts.last().is_some_and(|start| *start <= samples.len()),
+        "Invalid annotation audio boundaries"
+    );
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(samples.len());
+            let audio = &samples[*start..end];
+            let text = if audio.iter().all(|sample| *sample == 0.0) {
+                String::new()
+            } else {
+                transcribe(audio.to_vec()).with_context(|| {
+                    format!("Failed to transcribe annotation point {}", index + 1)
+                })?
+            };
+            Ok(format!("{}. {}", index + 1, text.trim()))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map(|points| points.join("\n"))
 }
 
 #[tauri::command]
@@ -300,6 +441,7 @@ pub fn submit_screen_annotation(
     app: AppHandle,
     session_id: u64,
     png_data_url: String,
+    point_count: usize,
 ) -> Result<(), String> {
     use base64::Engine;
 
@@ -324,7 +466,10 @@ pub fn submit_screen_annotation(
         let session = session
             .as_mut()
             .ok_or_else(|| "No screen annotation is active".to_string())?;
-        if session.snapshot.session_id != session_id || !session.phase.can_submit() {
+        if session.snapshot.session_id != session_id
+            || !session.phase.can_submit()
+            || session.point_starts.len() != point_count
+        {
             return Err("Screen annotation session is stale".to_string());
         }
         session.png = png_bytes;
@@ -335,10 +480,10 @@ pub fn submit_screen_annotation(
     Ok(())
 }
 
-fn mark_finalized(state: &ScreenAnnotationState) {
+fn mark_finalization_failed(state: &ScreenAnnotationState) {
     if let Ok(mut session) = state.session.lock() {
         if let Some(session) = session.as_mut() {
-            session.phase = AnnotationPhase::Finalized;
+            session.phase = AnnotationPhase::Failed;
         }
     }
     state.finalized.notify_all();
@@ -396,6 +541,7 @@ fn begin_windows(app: &AppHandle, binding_id: &str) -> Result<(), String> {
         path: snapshot_path.to_string_lossy().into_owned(),
         width: bounds.width,
         height: bounds.height,
+        point_count: 1,
     };
     let reset_snapshot = snapshot.clone();
 
@@ -409,6 +555,7 @@ fn begin_windows(app: &AppHandle, binding_id: &str) -> Result<(), String> {
             binding_id: binding_id.to_string(),
             target_window,
             phase: AnnotationPhase::Recording,
+            point_starts: vec![0],
         }) {
             let _ = std::fs::remove_file(previous.snapshot_path);
         }
@@ -616,13 +763,78 @@ fn restore_target_window(target_window: isize) {
 
 #[cfg(test)]
 mod tests {
-    use super::AnnotationPhase;
+    use super::*;
+
+    #[test]
+    fn numbered_annotation_keeps_silent_points_and_retry_boundaries() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("recording.wav");
+        let starts = [0, 2, 4, 4, 6];
+        save_audio_segments(&path, &starts).expect("save boundaries");
+        let restored = read_audio_segments(&path)
+            .expect("read boundaries")
+            .expect("numbered recording");
+        assert_eq!(restored, starts);
+        let samples = [0.1, 0.2, 0.0, 0.0, 0.3, 0.4];
+        let mut calls = Vec::new();
+        let text = transcribe_numbered_segments(&samples, &restored, |audio| {
+            calls.push(audio);
+            Ok(if calls.len() == 1 { "first" } else { "second" }.to_string())
+        })
+        .expect("transcribe");
+        assert_eq!(calls, vec![vec![0.1, 0.2], vec![0.3, 0.4]]);
+        assert_eq!(text, "1. first\n2. \n3. \n4. second\n5. ");
+        for invalid in [vec![], vec![1], vec![0, 4, 3], vec![0, 7]] {
+            assert!(
+                transcribe_numbered_segments(&samples, &invalid, |_| Ok(String::new())).is_err()
+            );
+        }
+        let failure =
+            transcribe_numbered_segments(&samples, &[0, 2], |_| anyhow::bail!("model failed"))
+                .expect_err("model error");
+        assert!(failure.to_string().contains("point 1"));
+        remove_audio_segments(&path);
+        assert!(read_audio_segments(&path)
+            .expect("missing boundaries")
+            .is_none());
+    }
+
+    #[test]
+    fn numbered_annotation_rejects_stale_or_finalizing_point_changes() {
+        let mut session = AnnotationSession {
+            snapshot: ScreenAnnotationSnapshot {
+                session_id: 7,
+                path: String::new(),
+                width: 1,
+                height: 1,
+                point_count: 2,
+            },
+            snapshot_path: PathBuf::new(),
+            png: Vec::new(),
+            bounds: ScreenBounds {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            binding_id: String::new(),
+            target_window: 0,
+            phase: AnnotationPhase::Recording,
+            point_starts: vec![0, 100],
+        };
+        assert!(validate_point_transition(&session, 7, 2).is_ok());
+        assert!(validate_point_transition(&session, 6, 2).is_err());
+        assert!(validate_point_transition(&session, 7, 1).is_err());
+        session.phase = AnnotationPhase::Finalizing;
+        assert!(validate_point_transition(&session, 7, 2).is_err());
+    }
 
     #[test]
     fn only_recording_sessions_can_show_the_overlay() {
         assert!(AnnotationPhase::Recording.can_show());
         assert!(!AnnotationPhase::Finalizing.can_show());
         assert!(!AnnotationPhase::Finalized.can_show());
+        assert!(!AnnotationPhase::Failed.can_show());
     }
 
     #[test]
@@ -630,6 +842,7 @@ mod tests {
         assert!(!AnnotationPhase::Recording.should_wait());
         assert!(AnnotationPhase::Finalizing.should_wait());
         assert!(!AnnotationPhase::Finalized.should_wait());
+        assert!(!AnnotationPhase::Failed.should_wait());
     }
 
     #[test]
@@ -637,5 +850,6 @@ mod tests {
         assert!(!AnnotationPhase::Recording.can_submit());
         assert!(AnnotationPhase::Finalizing.can_submit());
         assert!(!AnnotationPhase::Finalized.can_submit());
+        assert!(!AnnotationPhase::Failed.can_submit());
     }
 }

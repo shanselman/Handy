@@ -9,25 +9,38 @@ community discussion and production pull request.
 Ordinary dictation remains unchanged:
 
 - **Transcribe** (`Ctrl+Space` by default) records and pastes text only.
-- **Transcribe + Annotate** (`Ctrl+Alt+Space` by default) captures the monitor
-  containing the pointer, opens a full-screen drawing surface, and records speech.
+- **Transcribe + Annotate** (hold **Left Alt+Space** by default) captures the
+  monitor containing the pointer, opens a full-screen drawing surface, and
+  records speech until Alt or Space is released.
 
 Both bindings are configurable in **Settings > General**. A separate binding is
 used instead of a global checkbox so screenshot capture is selected per
-invocation. Users who prefer a modifier convention can configure the annotation
-binding as their normal dictation chord plus an additional modifier.
+invocation. The Left Alt+Space binding always uses hold behavior, independent of
+ordinary dictation's activation setting. Other annotation bindings retain the
+configured activation behavior and use the Next point button.
+When the held binding is selected, **Next point — Ctrl** appears as an indented
+child row in settings. Ctrl is fixed and is not an editable shortcut.
 
 While annotating:
 
 - Draw directly on the frozen screen image.
+- The first stroke anchors point **1**. Further strokes belong to that point.
+- While holding Left Alt+Space, press **Ctrl** to start the next numbered point
+  and speech segment without restarting the microphone. Release Ctrl to re-arm;
+  holding it or Space auto-repeat never adds extra points. Its first stroke
+  anchors the new number. **Next point** remains available as a button.
 - Choose an ink color and stroke width.
-- Clear all ink without discarding the screen capture.
-- Read the live streaming transcript below the drawing controls.
-- Press the green check or invoke the annotation shortcut again to finish.
+- Clear all ink without discarding the screen capture, point numbers, or speech.
+- Read the live transcript below the controls when the selected model supports
+  streaming. Numbered comments are transcribed locally per point after finishing.
+- Release Alt or Space, or press the green check, to finish. Press **Escape**
+  while still holding the chord to cancel without pasting.
 
 Finishing hides the annotation window immediately, restores the previously active
-application, then pastes the transcription followed by the annotated PNG. The
-image is still pasted when the recording contains no usable speech.
+application, then pastes one numbered PNG followed by the matching numbered
+comments. Silent points keep their number and an empty comment. A point finished
+without a drawing keeps its badge in the top-left margin; numbers are never
+silently removed or reassigned.
 
 ## Implementation
 
@@ -37,8 +50,30 @@ image is still pasted when the recording contains no usable speech.
 - `src/annotation/` renders the full-screen canvas and live transcript controls.
 - `src-tauri/src/actions.rs` starts annotation only for the dedicated
   `transcribe_with_annotation` action.
-- `src-tauri/src/clipboard.rs` performs the two-stage text and image paste while
+- `src-tauri/src/clipboard.rs` performs the two-stage image and text paste while
   preserving the previous clipboard content.
+
+Point boundaries are captured in the recorder's 16 kHz sample timeline, not a
+webview timer. Annotation capture replaces VAD-rejected frames with silence and
+fills delayed speech pre-roll back into its original slots, so silence removal
+cannot shift a spoken comment into another point. Ordinary dictation keeps its
+existing VAD behavior. Audio history stores a small `.annotation.json` boundary
+file beside each numbered WAV so retrying transcription preserves the numbers;
+history deletion and retention also remove that boundary file.
+
+The held shortcut reuses handy-keys' blocking keyboard listener on Windows, so
+Alt+Space does not also open the window's system menu. Only the chord's Space
+events are blocked; ordinary shortcuts remain unchanged when idle. Control
+transitions are queued with recording start/stop, and audio boundaries are
+committed before a subsequent release can finalize the recording. The overlay
+mirrors these numbered updates instead of recording a second boundary.
+
+An untouched former Ctrl+Alt+Space default is upgraded to Left Alt+Space when
+there is no conflicting Handy binding. Customized annotation shortcuts and
+conflicting assignments are preserved.
+While the held binding is configured, settings reject assigning Left Alt+Space
+(including generic Alt+Space) to another Handy action, including cancellation.
+Conflicting changes are rejected before unregistering the working shortcut.
 
 The screenshot is written to Handy's application cache only long enough for the
 webview to load it. The cached file is deleted after paste or cancellation. Speech
@@ -75,13 +110,26 @@ bun run lint
 cargo test --manifest-path src-tauri\Cargo.toml --lib
 ```
 
+Targeted numbered-point checks (no microphone or screen capture):
+
+```powershell
+cargo test --manifest-path src-tauri\Cargo.toml --lib annotation
+bun run test:playwright annotation.spec.ts
+```
+
+The browser checks use a synthetic screenshot and mocked Tauri commands; they do
+not capture the display, record audio, or paste into another application.
+
 ## Prototype constraints
 
 - Windows only.
 - Captures one monitor: the monitor containing the pointer when recording starts.
 - The destination application must support pasting images.
-- Text and image are pasted as two clipboard operations because many applications
+- Image and text are pasted as two clipboard operations because many applications
   do not consume mixed clipboard formats consistently.
+- One local transcription is run per point at completion. This adds processing
+  time for long sessions; automatic point detection and point reordering are not
+  part of this prototype.
 - A production proposal should gather community feedback and decide whether the
   annotation binding is visible by default or placed behind an experimental
   master toggle. The per-invocation binding should remain the primary control.

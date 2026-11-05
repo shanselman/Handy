@@ -309,10 +309,14 @@ export const HandyKeysShortcutInput: React.FC<HandyKeysShortcutInputProps> = ({
     `settings.general.shortcut.bindings.${shortcutId}.name`,
     binding.name,
   );
-  const translatedDescription = t(
-    `settings.general.shortcut.bindings.${shortcutId}.description`,
-    binding.description,
-  );
+  const translatedDescription =
+    shortcutId === "transcribe_with_annotation" &&
+    binding.current_binding === "alt_left+space"
+      ? t("screenAnnotation.holdShortcut")
+      : t(
+          `settings.general.shortcut.bindings.${shortcutId}.description`,
+          binding.description,
+        );
 
   return (
     <SettingContainer

@@ -83,11 +83,22 @@ pub async fn retry_history_entry_transcription(
 
     transcription_manager.initiate_model_load();
 
+    let segments = crate::screen_annotation::read_audio_segments(&audio_path)
+        .map_err(|error| error.to_string())?;
     let tm = Arc::clone(&transcription_manager);
-    let transcription = tauri::async_runtime::spawn_blocking(move || tm.transcribe(samples))
-        .await
-        .map_err(|e| format!("Transcription task panicked: {}", e))?
-        .map_err(|e| e.to_string())?;
+    let transcription = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(starts) = segments {
+            crate::screen_annotation::transcribe_numbered_segments(&samples, &starts, |audio| {
+                tm.initiate_model_load();
+                tm.transcribe(audio)
+            })
+        } else {
+            tm.transcribe(samples)
+        }
+    })
+    .await
+    .map_err(|e| format!("Transcription task panicked: {}", e))?
+    .map_err(|e| e.to_string())?;
 
     if transcription.is_empty() {
         return Err("Recording contains no speech".to_string());

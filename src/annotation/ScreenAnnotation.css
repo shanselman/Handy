@@ -38,6 +38,27 @@ body,
   transform: translateX(-50%);
 }
 
+.annotation-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.annotation-marker {
+  position: absolute;
+  display: grid;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  color: #fff;
+  background: #111;
+  font: bold 14px sans-serif;
+  transform: translate(-50%, -50%);
+  place-items: center;
+}
+
 .annotation-toolbar,
 .annotation-transcript {
   border: 1px solid color-mix(in srgb, var(--color-mid-gray) 25%, transparent);
@@ -118,6 +139,26 @@ body,
 
 .annotation-button:hover {
   background: color-mix(in srgb, var(--color-mid-gray) 22%, transparent);
+}
+
+.annotation-button:focus-visible {
+  outline: 2px solid var(--color-text);
+  outline-offset: 3px;
+}
+
+.annotation-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.annotation-next {
+  display: flex;
+  width: auto;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .annotation-button svg {

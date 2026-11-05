@@ -880,7 +880,8 @@ fn canonical_binding(binding: &str) -> String {
 fn available_annotation_binding(
     bindings: &HashMap<String, ShortcutBinding>,
 ) -> Option<&'static str> {
-    const CANDIDATES: [&str; 6] = [
+    const CANDIDATES: [&str; 7] = [
+        "alt_left+space",
         "ctrl+alt+space",
         "ctrl+alt+shift+space",
         "ctrl+alt+h",
@@ -890,11 +891,46 @@ fn available_annotation_binding(
     ];
 
     CANDIDATES.into_iter().find(|candidate| {
+        if *candidate == "alt_left+space" {
+            return !annotation_hold_conflicts(bindings);
+        }
         let candidate = canonical_binding(candidate);
         !bindings
             .values()
             .any(|binding| canonical_binding(&binding.current_binding) == candidate)
     })
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn annotation_hold_conflicts(bindings: &HashMap<String, ShortcutBinding>) -> bool {
+    bindings.values().any(|binding| {
+        binding.id != "transcribe_with_annotation"
+            && binding
+                .current_binding
+                .parse::<handy_keys::Hotkey>()
+                .is_ok_and(|hotkey| {
+                    hotkey.key == Some(handy_keys::Key::Space)
+                        && hotkey.modifiers.matches(handy_keys::Modifiers::OPT_LEFT)
+                })
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn upgrade_annotation_shortcut(settings: &mut AppSettings) -> bool {
+    if annotation_hold_conflicts(&settings.bindings) {
+        return false;
+    }
+    let Some(binding) = settings.bindings.get_mut("transcribe_with_annotation") else {
+        return false;
+    };
+    if canonical_binding(&binding.default_binding) != "ctrl+alt+space"
+        || canonical_binding(&binding.current_binding) != "ctrl+alt+space"
+    {
+        return false;
+    }
+    binding.default_binding = "alt_left+space".to_string();
+    binding.current_binding = "alt_left+space".to_string();
+    true
 }
 
 pub fn get_default_settings() -> AppSettings {
@@ -945,8 +981,8 @@ pub fn get_default_settings() -> AppSettings {
             id: "transcribe_with_annotation".to_string(),
             name: "Transcribe + Annotate".to_string(),
             description: "Captures the active screen so you can draw while dictating.".to_string(),
-            default_binding: "ctrl+alt+space".to_string(),
-            current_binding: "ctrl+alt+space".to_string(),
+            default_binding: "alt_left+space".to_string(),
+            current_binding: "alt_left+space".to_string(),
         },
     );
     bindings.insert(
@@ -1082,6 +1118,11 @@ pub fn get_settings(app: &AppHandle) -> AppSettings {
             };
 
         if apply_settings_migrations(&mut settings, &settings_value) {
+            updated = true;
+        }
+
+        #[cfg(target_os = "windows")]
+        if upgrade_annotation_shortcut(&mut settings) {
             updated = true;
         }
 
@@ -1316,7 +1357,7 @@ mod tests {
     fn windows_defaults_include_annotation_shortcut() {
         let settings = get_default_settings();
         let binding = &settings.bindings["transcribe_with_annotation"];
-        assert_eq!(binding.current_binding, "ctrl+alt+space");
+        assert_eq!(binding.current_binding, "alt_left+space");
     }
 
     #[cfg(target_os = "windows")]
@@ -1333,9 +1374,65 @@ mod tests {
                 current_binding: "alt+ctrl+space".to_string(),
             },
         );
+        bindings.insert(
+            "alternate".to_string(),
+            ShortcutBinding {
+                id: "alternate".to_string(),
+                name: "Alternate".to_string(),
+                description: String::new(),
+                default_binding: "alt+space".to_string(),
+                current_binding: "alt+space".to_string(),
+            },
+        );
 
         assert_eq!(
             available_annotation_binding(&bindings),
+            Some("ctrl+alt+shift+space")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn annotation_hold_upgrade_preserves_custom_bindings_and_conflicts() {
+        let mut settings = get_default_settings();
+        let binding = settings
+            .bindings
+            .get_mut("transcribe_with_annotation")
+            .unwrap();
+        binding.default_binding = "ctrl+alt+space".to_string();
+        binding.current_binding = binding.default_binding.clone();
+        assert!(upgrade_annotation_shortcut(&mut settings));
+        assert!(!upgrade_annotation_shortcut(&mut settings));
+        assert_eq!(
+            settings.bindings["transcribe_with_annotation"].current_binding,
+            "alt_left+space"
+        );
+
+        let binding = settings
+            .bindings
+            .get_mut("transcribe_with_annotation")
+            .unwrap();
+        binding.default_binding = "ctrl+alt+space".to_string();
+        binding.current_binding = "ctrl+alt+a".to_string();
+        assert!(!upgrade_annotation_shortcut(&mut settings));
+        assert_eq!(
+            settings.bindings["transcribe_with_annotation"].current_binding,
+            "ctrl+alt+a"
+        );
+
+        settings
+            .bindings
+            .get_mut("transcribe_with_annotation")
+            .unwrap()
+            .current_binding = "ctrl+alt+space".to_string();
+        settings
+            .bindings
+            .get_mut("transcribe")
+            .unwrap()
+            .current_binding = "alt+space".to_string();
+        assert!(!upgrade_annotation_shortcut(&mut settings));
+        assert_eq!(
+            available_annotation_binding(&settings.bindings),
             Some("ctrl+alt+shift+space")
         );
     }

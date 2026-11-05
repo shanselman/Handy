@@ -57,13 +57,13 @@ impl ScreenAnnotationGuard {
         Self { app, active }
     }
 
-    fn take_image(&mut self) -> Option<Vec<u8>> {
+    fn take_image(&mut self) -> Result<Option<Vec<u8>>, String> {
         if !self.active {
-            return None;
+            return Ok(None);
         }
-        let image = crate::screen_annotation::take_annotated_image(&self.app);
+        let image = crate::screen_annotation::take_annotated_image(&self.app)?;
         self.active = false;
-        image
+        Ok(image)
     }
 }
 
@@ -537,6 +537,8 @@ impl ShortcutAction for TranscribeAction {
             .unwrap_or(false);
         let vad_policy = if !settings.vad_enabled {
             VadPolicy::Disabled
+        } else if self.annotate_screen && crate::screen_annotation::enabled() {
+            VadPolicy::Annotation
         } else if model_supports_streaming {
             VadPolicy::Streaming
         } else {
@@ -748,28 +750,53 @@ impl ShortcutAction for TranscribeAction {
                 } else {
                     // Save WAV concurrently with transcription
                     let sample_count = samples.len();
-                    let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
+                    let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp_micros());
                     let wav_path = hm.recordings_dir().join(&file_name);
                     let wav_path_for_verify = wav_path.clone();
                     let samples_for_wav = samples.clone();
+                    let segment_starts = if annotate_screen {
+                        crate::screen_annotation::audio_segment_starts(&ah)
+                    } else {
+                        Ok(None)
+                    };
+                    let segments_for_wav = segment_starts.as_ref().ok().cloned().flatten();
                     let wav_handle = tauri::async_runtime::spawn_blocking(move || {
-                        crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
+                        crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)?;
+                        if let Some(starts) = segments_for_wav {
+                            crate::screen_annotation::save_audio_segments(&wav_path, &starts)?;
+                        }
+                        Ok::<_, anyhow::Error>(())
                     });
 
                     // Transcribe concurrently with WAV save. If a live stream was
                     // running, finalize it and use its text (all audio was already
                     // fed to the stream); otherwise batch-transcribe the samples.
                     let transcription_time = Instant::now();
-                    let transcription_result = match tm.finalize_stream() {
+                    let transcription_result = match (segment_starts, tm.finalize_stream()) {
+                        (Err(error), _) => Err(anyhow::anyhow!(error)),
+                        (_, Err(error)) => Err(error),
+                        (Ok(Some(starts)), Ok(_)) => {
+                            crate::screen_annotation::transcribe_numbered_segments(
+                                &samples,
+                                &starts,
+                                |audio| {
+                                    anyhow::ensure!(
+                                        !rm.was_cancelled_since(cancel_generation),
+                                        "Annotation transcription was cancelled"
+                                    );
+                                    tm.initiate_model_load();
+                                    tm.transcribe(audio)
+                                },
+                            )
+                        }
                         // A finalized stream with usable text wins. An empty result
                         // (no active stream, produced nothing, or a finalize error
                         // after the engine was returned) falls back to a full batch
                         // transcription of the same audio. A finalize timeout is
                         // surfaced instead — the worker may still hold the engine,
                         // so a batch fallback would contend with it.
-                        Ok(Some(text)) if !text.trim().is_empty() => Ok(text),
-                        Ok(_) => tm.transcribe(samples),
-                        Err(err) => Err(err),
+                        (Ok(None), Ok(Some(text))) if !text.trim().is_empty() => Ok(text),
+                        (Ok(None), Ok(_)) => tm.transcribe(samples),
                     };
 
                     // Await WAV save and verify
@@ -852,7 +879,16 @@ impl ShortcutAction for TranscribeAction {
 
                             // Finalization may wait briefly for the webview to encode
                             // its canvas. Keep that wait off the main/UI thread.
-                            let annotated_image = annotation_guard.take_image();
+                            let annotated_image = match annotation_guard.take_image() {
+                                Ok(image) => image,
+                                Err(error) => {
+                                    error!("Failed to finalize numbered screenshot: {error}");
+                                    let _ = ah.emit("transcription-error", error);
+                                    utils::hide_recording_overlay(&ah);
+                                    set_tray_state(&ah, TrayIconState::Idle);
+                                    return;
+                                }
+                            };
                             if processed.final_text.is_empty() && annotated_image.is_none() {
                                 utils::hide_recording_overlay(&ah);
                                 set_tray_state(&ah, TrayIconState::Idle);

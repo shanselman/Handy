@@ -372,6 +372,7 @@ impl HistoryManager {
                     deleted_count += 1;
                 }
             }
+            crate::screen_annotation::remove_audio_segments(&file_path);
         }
 
         Ok(deleted_count)
@@ -620,6 +621,7 @@ impl HistoryManager {
                     // Continue with database deletion even if file deletion fails
                 }
             }
+            crate::screen_annotation::remove_audio_segments(&file_path);
         }
 
         // Delete from database

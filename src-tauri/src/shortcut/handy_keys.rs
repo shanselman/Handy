@@ -428,6 +428,8 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
     let default_bindings = settings::get_default_settings().bindings;
     let user_settings = settings::load_or_create_app_settings(app);
 
+    #[cfg(target_os = "windows")]
+    let mut held_annotation = None;
     // Register all bindings except cancel (which is dynamic)
     for (id, default_binding) in default_bindings {
         if id == "cancel" {
@@ -444,6 +446,11 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
             .cloned()
             .unwrap_or(default_binding);
 
+        #[cfg(target_os = "windows")]
+        if super::annotation_hold::is_binding(&binding) {
+            held_annotation = Some(binding);
+            continue;
+        }
         if let Err(e) = state.register(&binding) {
             error!(
                 "Failed to register handy-keys shortcut {} during init: {}",
@@ -453,6 +460,10 @@ pub fn init_shortcuts(app: &AppHandle) -> Result<(), String> {
     }
 
     app.manage(state);
+    #[cfg(target_os = "windows")]
+    if held_annotation.is_some() {
+        super::annotation_hold::register(app)?;
+    }
     info!("handy-keys shortcuts initialized");
     Ok(())
 }
@@ -504,6 +515,10 @@ pub fn unregister_cancel_shortcut(app: &AppHandle) {
 
 /// Register a shortcut
 pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if super::annotation_hold::is_binding(&binding) {
+        return super::annotation_hold::register(app);
+    }
     let state = app
         .try_state::<HandyKeysState>()
         .ok_or("HandyKeysState not initialized")?;
@@ -512,6 +527,10 @@ pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<()
 
 /// Unregister a shortcut
 pub fn unregister_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if super::annotation_hold::is_binding(&binding) {
+        return super::annotation_hold::unregister(app);
+    }
     let state = app
         .try_state::<HandyKeysState>()
         .ok_or("HandyKeysState not initialized")?;

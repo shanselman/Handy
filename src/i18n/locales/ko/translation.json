@@ -645,6 +645,16 @@
     "portableUpdateBrowseMessage": "포터블 설치는 자동으로 업데이트할 수 없습니다. GitHub Releases에서 사용 중인 시스템에 맞는 최신 버전을 다운로드해 같은 폴더에 설치하세요. Data/ 폴더(설정, 모델, 녹음)는 그대로 유지됩니다.",
     "portableUpdateBrowseButton": "GitHub Releases 열기"
   },
+  "screenAnnotation": {
+    "holdShortcut": "왼쪽 Alt+Space를 누른 채 그리며 말하세요. Ctrl을 누르면 다음 번호로 넘어가고, Alt나 Space를 놓으면 완료됩니다.",
+    "nextPointShortcut": "다음 지점 (Ctrl)",
+    "nextPoint": "다음 항목",
+    "point": "항목 {{number}}",
+    "clearInk": "선 지우기",
+    "inkColor": "선 색상",
+    "strokeWidth": "선 굵기",
+    "actionFailed": "주석을 업데이트하지 못했습니다."
+  },
   "common": {
     "loading": "로딩 중...",
     "delete": "삭제",

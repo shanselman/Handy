@@ -71,6 +71,10 @@ pub fn validate_shortcut(raw: &str) -> Result<(), String> {
 
 /// Register a shortcut using Tauri's global-shortcut plugin
 pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if super::annotation_hold::is_binding(&binding) {
+        return super::annotation_hold::register(app);
+    }
     // Validate for Tauri requirements
     if let Err(e) = validate_shortcut(&binding.current_binding) {
         warn!(
@@ -137,6 +141,10 @@ pub fn register_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<()
 
 /// Unregister a shortcut from Tauri's global-shortcut plugin
 pub fn unregister_shortcut(app: &AppHandle, binding: ShortcutBinding) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if super::annotation_hold::is_binding(&binding) {
+        return super::annotation_hold::unregister(app);
+    }
     let shortcut = match binding.current_binding.parse::<Shortcut>() {
         Ok(s) => s,
         Err(e) => {

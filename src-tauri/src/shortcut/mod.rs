@@ -9,6 +9,8 @@
 //! The active implementation is determined by the `keyboard_implementation`
 //! setting and can be changed at runtime.
 
+#[cfg(target_os = "windows")]
+mod annotation_hold;
 mod handler;
 pub mod handy_keys;
 pub mod tauri_impl;
@@ -149,6 +151,16 @@ pub fn change_binding(
         }
     };
 
+    let mut updated_binding = binding_to_modify.clone();
+    updated_binding.current_binding = binding.clone();
+    #[cfg(target_os = "windows")]
+    if let Err(error) =
+        annotation_hold::validate_binding_change(&settings.bindings, &updated_binding)
+    {
+        warn!("change_binding validation error: {}", error);
+        return Err(error);
+    }
+
     // If this is the cancel binding, just update the settings and return
     // It's managed dynamically, so we don't register/unregister here
     if id == "cancel" {
@@ -172,16 +184,13 @@ pub fn change_binding(
     }
 
     // Validate the new shortcut for the current keyboard implementation
-    if let Err(e) = validate_shortcut_for_implementation(&binding, settings.keyboard_implementation)
+    if let Err(e) =
+        validate_binding_for_implementation(&updated_binding, settings.keyboard_implementation)
     {
         warn!("change_binding validation error: {}", e);
         restore_registration(&app, &binding_to_modify);
         return Err(e);
     }
-
-    // Create an updated binding
-    let mut updated_binding = binding_to_modify.clone();
-    updated_binding.current_binding = binding;
 
     // Register the new binding
     if let Err(e) = register_shortcut(&app, updated_binding.clone()) {
@@ -382,10 +391,15 @@ pub fn get_keyboard_implementation(app: AppHandle) -> String {
 // ============================================================================
 
 /// Validate a shortcut for a specific implementation
-fn validate_shortcut_for_implementation(
-    raw: &str,
+fn validate_binding_for_implementation(
+    binding: &ShortcutBinding,
     implementation: KeyboardImplementation,
 ) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if annotation_hold::is_binding(binding) {
+        return Ok(());
+    }
+    let raw = &binding.current_binding;
     match implementation {
         KeyboardImplementation::Tauri => tauri_impl::validate_shortcut(raw),
         KeyboardImplementation::HandyKeys => handy_keys::validate_shortcut(raw),
@@ -458,9 +472,7 @@ fn register_all_shortcuts_for_implementation(
             .unwrap_or_else(|| default_binding.clone());
 
         // Validate the shortcut for the target implementation
-        if let Err(e) =
-            validate_shortcut_for_implementation(&binding.current_binding, implementation)
-        {
+        if let Err(e) = validate_binding_for_implementation(&binding, implementation) {
             info!(
                 "Shortcut '{}' ({}) is invalid for {:?}: {}. Resetting to default.",
                 id, binding.current_binding, implementation, e

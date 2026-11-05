@@ -170,6 +170,8 @@ enum Effect {
 /// Commands processed sequentially by the coordinator thread.
 enum Command {
     Input(InputEvent),
+    AnnotationNextPoint,
+    AnnotationCancel,
     Cancel { recording_was_active: bool },
     ProcessingFinished,
 }
@@ -574,6 +576,24 @@ impl TranscriptionCoordinator {
                                 run_effect(&app, &mut state, effect);
                             }
                         }
+                        Command::AnnotationNextPoint => {
+                            if matches!(
+                                &state.stage,
+                                Stage::Recording(id) if id == "transcribe_with_annotation"
+                            ) {
+                                crate::screen_annotation::request_next_point(&app);
+                            }
+                        }
+                        Command::AnnotationCancel => {
+                            if matches!(
+                                &state.stage,
+                                Stage::Recording(id) if id == "transcribe_with_annotation"
+                            ) {
+                                if let Some(action) = ACTION_MAP.get("cancel") {
+                                    action.start(&app, "cancel", "escape");
+                                }
+                            }
+                        }
                         Command::Cancel {
                             recording_was_active,
                         } => state.on_cancel(recording_was_active),
@@ -660,6 +680,18 @@ impl TranscriptionCoordinator {
             })
             .is_err()
         {
+            warn!("Transcription coordinator channel closed");
+        }
+    }
+
+    pub fn send_annotation_next_point(&self) {
+        if self.tx.send(Command::AnnotationNextPoint).is_err() {
+            warn!("Transcription coordinator channel closed");
+        }
+    }
+
+    pub fn send_annotation_cancel(&self) {
+        if self.tx.send(Command::AnnotationCancel).is_err() {
             warn!("Transcription coordinator channel closed");
         }
     }

@@ -45,6 +45,13 @@ export const GlobalShortcutInput: React.FC<GlobalShortcutInputProps> = ({
 
     let cleanup = false;
 
+    const keyFromEvent = (event: KeyboardEvent) =>
+      editingShortcutId === "transcribe_with_annotation" &&
+      osType === "windows" &&
+      event.code === "AltLeft"
+        ? "alt_left"
+        : normalizeKey(getKeyName(event, osType));
+
     // Keyboard event listeners
     const handleKeyDown = async (e: KeyboardEvent) => {
       if (cleanup) return;
@@ -52,8 +59,7 @@ export const GlobalShortcutInput: React.FC<GlobalShortcutInputProps> = ({
       e.preventDefault();
 
       // Get the key with OS-specific naming and normalize it
-      const rawKey = getKeyName(e, osType);
-      const key = normalizeKey(rawKey);
+      const key = keyFromEvent(e);
 
       if (!keyPressed.includes(key)) {
         setKeyPressed((prev) => [...prev, key]);
@@ -69,8 +75,7 @@ export const GlobalShortcutInput: React.FC<GlobalShortcutInputProps> = ({
       e.preventDefault();
 
       // Get the key with OS-specific naming and normalize it
-      const rawKey = getKeyName(e, osType);
-      const key = normalizeKey(rawKey);
+      const key = keyFromEvent(e);
 
       // Remove from currently pressed keys
       setKeyPressed((prev) => prev.filter((k) => k !== key));
@@ -85,6 +90,7 @@ export const GlobalShortcutInput: React.FC<GlobalShortcutInputProps> = ({
           "control",
           "shift",
           "alt",
+          "alt_left",
           "option",
           "meta",
           "command",
@@ -261,10 +267,14 @@ export const GlobalShortcutInput: React.FC<GlobalShortcutInputProps> = ({
     `settings.general.shortcut.bindings.${shortcutId}.name`,
     binding.name,
   );
-  const translatedDescription = t(
-    `settings.general.shortcut.bindings.${shortcutId}.description`,
-    binding.description,
-  );
+  const translatedDescription =
+    shortcutId === "transcribe_with_annotation" &&
+    binding.current_binding === "alt_left+space"
+      ? t("screenAnnotation.holdShortcut")
+      : t(
+          `settings.general.shortcut.bindings.${shortcutId}.description`,
+          binding.description,
+        );
 
   return (
     <SettingContainer
